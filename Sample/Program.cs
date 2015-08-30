@@ -1,8 +1,12 @@
-﻿using ReactiveWeb;
+﻿#define USE_BYTES_BODY
+
+using ReactiveWeb;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reactive;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
 
 namespace Sample
 {
@@ -15,7 +19,11 @@ namespace Sample
             var request = new HttpRequest(uri);
             Console.Write(request.ToString(MethodType.GET));
 
-            using (var subject = new HttpSubject())
+#if USE_BYTES_BODY
+            using (var subject = new HttpChunkBytesSubject())
+#else
+            using (var subject = new HttpRawByteSubject())
+#endif
             {
                 // statusline
                 subject.StatusObservable.Subscribe(x =>
@@ -23,72 +31,57 @@ namespace Sample
                     Console.WriteLine("status: " + x);
                 });
 
-                int? contentLength = null;
-                bool isChunked = false;
-
                 // response headers
                 subject.HeaderObservable.Subscribe(x =>
                 {
                     Console.WriteLine(x.Key + ": " + x.Value);
-                    switch(x.Key.ToLower())
-                    {
-                        case "content-length":
-                            contentLength = int.Parse(x.Value);
-                            break;
-
-                        case "transfer-encoding":
-                            if (x.Value.ToLower()=="chunked")
-                            {
-                                isChunked = true;
-                            }
-                            break;
-
-                    }
                 }
-                , ()=>
+                , () =>
                 {
-                    // body
-                    if (contentLength.HasValue)
-                    {
-                        // fixsized body
-                        Console.WriteLine();
-                        subject.BodyObservable.Buffer(contentLength.Value).Subscribe(x =>
-                        {
-                            Console.WriteLine("fixed: " + x.Count + " bytes");
-                        });
-                    }
-                    else if(isChunked)
-                    {
-                        // chunked body
-                        Console.WriteLine();
-                        subject.BodyObservable.HttpChunk().Subscribe(x =>
-                        {
-                            Console.WriteLine("chunk: " + x.Count + " bytes");
-                        });
-                    }
-                    else
-                    {
-                        // no size body
-                        Console.WriteLine();
-                        var body = new List<Byte>();
-                        subject.BodyObservable.Subscribe(x =>
-                        {
-                            body.Add(x);
-                        }
-                        , ex => Console.WriteLine(ex)
-                        , () =>
-                        {
-                            Console.WriteLine(body.ToArray().Length + " bytes");
-                        });
-                    }
+                    Console.WriteLine();
+                }
+                );
+
+                // body
+#if USE_BYTES_BODY
+                var body = new Subject<IList<Byte>>();
+                body.Subscribe(x =>
+                {
+                    Console.WriteLine("body: " + x.Count + " bytes");
+                }
+                , ex =>
+                {
+                    Console.WriteLine(ex);
+                }
+                , () =>
+                {
+                    Console.WriteLine("body end");
                 });
+#else
+                var body = new Subject<Byte>();
+                var buffer = new List<Byte>();
+                body.Subscribe(x =>
+                {
+                    buffer.Add(x);
+                }
+                , ex =>
+                {
+                    Console.WriteLine(ex);
+                }
+                , () =>
+                {
+                    Console.WriteLine("body: " + buffer.Count + " bytes");
+                    Console.WriteLine("body end");
+                });
+#endif
+                subject.BodyObservable.Subscribe(body);
 
                 // execute
                 var cancel =
                 request.Connect().Subscribe(subject);
 
                 // wait...
-                subject.BodyObservable.Wait();
+                body.Wait();
             }
 
             // hit enter key

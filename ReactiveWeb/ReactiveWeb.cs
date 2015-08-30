@@ -355,6 +355,10 @@ namespace ReactiveWeb
                     {
                         // chunk body が終わりに到達
                         observer.OnNext(chunk);
+                        if (chunk.Count == 0)
+                        {
+                            observer.OnCompleted();
+                        }
                     }
                 },
                 observer.OnError,
@@ -363,7 +367,7 @@ namespace ReactiveWeb
         }
     }
 
-    public class HttpSubject : IObserver<HttpConnection>, IDisposable
+    public abstract class HttpSubjectBase : IObserver<HttpConnection>, IDisposable
     {
         CompositeDisposable m_disposable = new CompositeDisposable();
 
@@ -371,7 +375,7 @@ namespace ReactiveWeb
         Action<Exception> m_errorHandler;
         int m_readBufferSize;
 
-        public HttpSubject(int readBufferSize=1024, IScheduler scheduler=null, Action<Exception> errorHandler=null)
+        public HttpSubjectBase(int readBufferSize = 1024, IScheduler scheduler = null, Action<Exception> errorHandler = null)
         {
             m_readBufferSize = readBufferSize;
             m_scheduler = scheduler;
@@ -396,21 +400,12 @@ namespace ReactiveWeb
             }
         }
 
-        Subject<Byte> m_bodyObservable = new Subject<Byte>();
-        public IObservable<Byte> BodyObservable
-        {
-            get
-            {
-                return m_bodyObservable;
-            }
-        }
-
-        public void OnCompleted()
+        public virtual void OnCompleted()
         {
             // do nothing
         }
 
-        public void OnError(Exception error)
+        public virtual void OnError(Exception error)
         {
             if (m_errorHandler != null)
             {
@@ -437,12 +432,14 @@ namespace ReactiveWeb
                 .Publish()
             ;
 
+            // status
             lineObservable.Take(1)
                 .Select(x => Encoding.ASCII.GetString(x.ToArray()).TrimEnd())
                 .Subscribe(m_statusObservable)
                 .AddTo(m_disposable)
                 ;
 
+            // headers
             var headers = new List<KeyValuePair<String, String>>();
             lineObservable.Skip(1).TakeWhile(x => x.Count > 2)
                 .Select(x => Encoding.ASCII.GetString(x.ToArray()).TrimEnd())
@@ -452,14 +449,16 @@ namespace ReactiveWeb
                 .AddTo(m_disposable)
                 ;
 
-            byteObservable.SkipWhile(_ => !detector.IsHeaderEnd)
-            .Subscribe(m_bodyObservable)
-            .AddTo(m_disposable)
-            ;
+            // body
+            InitializeByteObservable(byteObservable.SkipWhile(_ => !detector.IsHeaderEnd))
+                .AddTo(m_disposable)
+                ;            
 
             lineObservable.Connect();
             byteObservable.Connect();
         }
+
+        protected abstract IDisposable InitializeByteObservable(IObservable<Byte> byteObservable);
 
         #region IDisposable Support
         private bool disposedValue = false; // 重複する呼び出しを検出するには
@@ -496,5 +495,108 @@ namespace ReactiveWeb
             // GC.SuppressFinalize(this);
         }
         #endregion
+    }
+
+    public class HttpRawByteSubject : HttpSubjectBase
+    {
+        Subject<Byte> m_bodyObservable = new Subject<Byte>();
+        public IObservable<Byte> BodyObservable
+        {
+            get
+            {
+                return m_bodyObservable;
+            }
+        }
+
+        protected override IDisposable InitializeByteObservable(IObservable<Byte> byteObservable)
+        {
+            return
+            byteObservable            
+            .Subscribe(m_bodyObservable)
+            ;
+        }
+    }
+
+    public class HttpChunkBytesSubject: HttpSubjectBase
+    {
+        Subject<IList<Byte>> m_bodyObservable = new Subject<IList<Byte>>();
+        public IObservable<IList<Byte>> BodyObservable
+        {
+            get
+            {
+                return m_bodyObservable;
+            }
+        }
+
+        protected override IDisposable InitializeByteObservable(IObservable<Byte> byteObservable)
+        {
+            var disposable = new CompositeDisposable();
+
+            int? contentLength = null;
+            bool isChunked = false;
+
+            // response headers
+            HeaderObservable.Subscribe(x =>
+            {
+                switch (x.Key.ToLower())
+                {
+                    case "content-length":
+                        contentLength = int.Parse(x.Value);
+                        break;
+
+                    case "transfer-encoding":
+                        if (x.Value.ToLower() == "chunked")
+                        {
+                            isChunked = true;
+                        }
+                        break;
+
+                }
+            }
+            , () =>
+            {
+                // body
+                if (contentLength.HasValue)
+                {
+                    // fixsized body
+                    byteObservable
+                    .Buffer(contentLength.Value)
+                    .Take(1)
+                    .Subscribe(m_bodyObservable)
+                    .AddTo(disposable)
+                    ;
+                }
+                else if (isChunked)
+                {
+                    // chunked body
+                    byteObservable
+                    .HttpChunk()
+                    .Subscribe(m_bodyObservable)
+                    .AddTo(disposable)
+                    ;
+                }
+                else
+                {
+                    // no size body
+                    var body = new List<Byte>();
+                    byteObservable.Subscribe(x =>
+                    {
+                        body.Add(x);
+                    }
+                    , m_bodyObservable.OnError
+                    , () =>
+                    {
+                        m_bodyObservable.OnNext(body);
+                        m_bodyObservable.OnCompleted();
+                    })
+                    .AddTo(disposable)
+                    ;
+                }
+            })
+            .AddTo(disposable)
+            ;
+
+            return disposable;
+        }
     }
 }
