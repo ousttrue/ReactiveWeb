@@ -1,5 +1,6 @@
 ﻿using ReactiveWeb;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reactive.Linq;
 
@@ -22,23 +23,64 @@ namespace Sample
                     Console.WriteLine("status: " + x);
                 });
 
+                int? contentLength = null;
+                bool isChunked = false;
+
                 // response headers
                 subject.HeaderObservable.Subscribe(x =>
                 {
                     Console.WriteLine(x.Key + ": " + x.Value);
-                });
+                    switch(x.Key.ToLower())
+                    {
+                        case "content-length":
+                            contentLength = int.Parse(x.Value);
+                            break;
 
-                // response body
-                var ms = new MemoryStream();
-                subject.BodyObservable.Subscribe(x =>
-                {
-                    ms.WriteByte(x);
+                        case "transfer-encoding":
+                            if (x.Value.ToLower()=="chunked")
+                            {
+                                isChunked = true;
+                            }
+                            break;
+
+                    }
                 }
-                , ex=>Console.WriteLine(ex)
                 , ()=>
                 {
-                    Console.WriteLine();
-                    Console.WriteLine(ms.ToArray().Length + " bytes");
+                    // body
+                    if (contentLength.HasValue)
+                    {
+                        // fixsized body
+                        Console.WriteLine();
+                        subject.BodyObservable.Buffer(contentLength.Value).Subscribe(x =>
+                        {
+                            Console.WriteLine("fixed: " + x.Count + " bytes");
+                        });
+                    }
+                    else if(isChunked)
+                    {
+                        // chunked body
+                        Console.WriteLine();
+                        subject.BodyObservable.HttpChunk().Subscribe(x =>
+                        {
+                            Console.WriteLine("chunk: " + x.Count + " bytes");
+                        });
+                    }
+                    else
+                    {
+                        // no size body
+                        Console.WriteLine();
+                        var body = new List<Byte>();
+                        subject.BodyObservable.Subscribe(x =>
+                        {
+                            body.Add(x);
+                        }
+                        , ex => Console.WriteLine(ex)
+                        , () =>
+                        {
+                            Console.WriteLine(body.ToArray().Length + " bytes");
+                        });
+                    }
                 });
 
                 // execute
@@ -46,8 +88,11 @@ namespace Sample
                 request.Connect().Subscribe(subject);
 
                 // wait...
-                Console.ReadLine();
+                subject.BodyObservable.Wait();
             }
+
+            // hit enter key
+            Console.ReadLine();
         }
     }
 }

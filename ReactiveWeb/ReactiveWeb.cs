@@ -292,6 +292,77 @@ namespace ReactiveWeb
         }
     }
 
+    public class ChunkAggregator
+    {
+        List<Byte> m_chunk = new List<Byte>();
+        List<Byte> m_header = new List<Byte>();
+
+        bool m_inChunkHeader = true;
+        byte m_prev;
+        int m_remain;
+
+        public IList<Byte> Push(Byte x)
+        {
+            if (m_inChunkHeader)
+            {
+                m_header.Add(x);
+                if (m_prev == 0x0d && x == 0x0a)
+                {
+                    // end of chunk header
+                    var headline = Encoding.ASCII.GetString(m_header.Take(m_header.Count - 2).ToArray());
+                    m_remain = Convert.ToInt32(headline, 16) + 2;
+                    m_header.Clear();
+                    m_inChunkHeader = false;
+                }
+                m_prev = x;
+            }
+            else
+            {
+                m_chunk.Add(x);
+                --m_remain;
+                if (m_remain == 0)
+                {
+                    // end ob chunk body
+                    var chunk = m_chunk;
+                    m_inChunkHeader = true;
+                    m_chunk = new List<byte>();
+
+                    // drop crlf
+                    chunk.RemoveAt(chunk.Count - 1);
+                    chunk.RemoveAt(chunk.Count - 1);
+
+                    return chunk;
+                }
+            }
+
+            return null;
+        }
+    }
+
+    public static class TransferExtensions
+    {
+        public static IObservable<IList<Byte>> HttpChunk(
+            this IObservable<Byte> source
+            )
+        {
+            return Observable.Create<IList<Byte>>(observer =>
+            {
+                var chunkAggregator = new ChunkAggregator();
+                return source.Subscribe(value =>
+                {
+                    var chunk = chunkAggregator.Push(value);
+                    if (chunk!= null)
+                    {
+                        // chunk body が終わりに到達
+                        observer.OnNext(chunk);
+                    }
+                },
+                observer.OnError,
+                observer.OnCompleted);
+            });
+        }
+    }
+
     public class HttpSubject : IObserver<HttpConnection>, IDisposable
     {
         CompositeDisposable m_disposable = new CompositeDisposable();
