@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 14
+VisualStudioVersion = 14.0.23107.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReactiveWeb", "ReactiveWeb\ReactiveWeb.csproj", "{7E05F2B5-BA60-42F6-9C4D-6C7188B848F0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sample", "Sample\Sample.csproj", "{A4ACFAF7-B601-4B2B-AF70-44305209AC8D}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7E05F2B5-BA60-42F6-9C4D-6C7188B848F0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E05F2B5-BA60-42F6-9C4D-6C7188B848F0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E05F2B5-BA60-42F6-9C4D-6C7188B848F0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E05F2B5-BA60-42F6-9C4D-6C7188B848F0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A4ACFAF7-B601-4B2B-AF70-44305209AC8D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A4ACFAF7-B601-4B2B-AF70-44305209AC8D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A4ACFAF7-B601-4B2B-AF70-44305209AC8D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A4ACFAF7-B601-4B2B-AF70-44305209AC8D}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
