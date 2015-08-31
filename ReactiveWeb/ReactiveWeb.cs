@@ -190,7 +190,7 @@ namespace ReactiveWeb
                 ;
         }
 
-        public IObservable<Unit> SendRequest(HttpRequest request)
+        public IObservable<Unit> SendRequestObservable(HttpRequest request)
         {
             return
             from wait_for_write_request_header in Write(request.ToString())
@@ -435,7 +435,14 @@ namespace ReactiveWeb
         {
             return HttpConnection.Create(request.Uri)
                 .Connect()
-                .Do(x => x.SendRequest(request))
+                .Do(x =>
+                {
+                    x.SendRequestObservable(request)
+                        .Subscribe(_ =>
+                        {
+
+                        });
+                })
                 ;
         }
     }
