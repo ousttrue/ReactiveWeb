@@ -17,7 +17,7 @@ namespace Sample
             // request
             var uri = new Uri(args[0]);
             var request = new HttpRequest(uri);
-            Console.Write(request.ToString(MethodType.GET));
+            Console.Write(request.ToString());
 
 #if USE_BYTES_BODY
             using (var subject = new HttpChunkBytesSubject())

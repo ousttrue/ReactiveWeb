@@ -27,13 +27,13 @@ namespace ReactiveWeb
         public static TResult AddTo<T, TResult>(this T resource, Func<T, TResult> register) where T : IDisposable
         {
             if (register == null)
-                throw new ArgumentNullException(nameof(register));
+                throw new ArgumentNullException(/*nameof(register)*/);
             return register(resource);
         }
         public static void AddTo<T>(this T resource, CompositeDisposable register) where T : IDisposable
         {
             if (register == null)
-                throw new ArgumentNullException(nameof(register));
+                throw new ArgumentNullException(/*nameof(register)*/);
             register.Add(resource);
         }
 
@@ -201,6 +201,11 @@ namespace ReactiveWeb
             return Write(encoding.GetBytes(text));
         }
 
+        public void Flush()
+        {
+            m_stream.Flush();
+        }
+
         #region IDisposable Support
         protected CompositeDisposable m_disposable = new CompositeDisposable();
 
@@ -249,12 +254,22 @@ namespace ReactiveWeb
         protected override Stream GetStream(Uri uri, TcpClient connection)
         {
             var stream = connection.GetStream();
-            var sslStream = new SslStream(stream, false, RemoteCertificateValidationCallback);
+            var sslStream = new SslStream(stream, false, RemoteCertificateNoValidationCallback);
             //サーバーの認証を行う
             //これにより、RemoteCertificateValidationCallbackメソッドが呼ばれる
             sslStream.AuthenticateAsClient(uri.Host);
 
             return sslStream;
+        }
+
+        //サーバー証明書を検証するためのコールバックメソッド
+        private static Boolean RemoteCertificateNoValidationCallback(Object sender,
+            X509Certificate certificate,
+            X509Chain chain,
+            SslPolicyErrors sslPolicyErrors)
+        {
+            //サーバー証明書を検証せずに無条件に許可する
+            return true;
         }
 
         //サーバー証明書を検証するためのコールバックメソッド
@@ -309,50 +324,84 @@ namespace ReactiveWeb
 
     public class HttpRequest
     {
+        public MethodType Method { get; set; }
+
+        public Int32 Major { get; set; }
+        public Int32 Minor { get; set; }
+
         public HttpRequest(Uri uri)
         {
+            Major = 1;
+            Minor = 1;
             Uri = uri;
-            Headers.Add(new KeyValuePair<String, String>("Host", uri.Host));
+            SetHeader("Host", uri.Host);
+#if false
+            SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10240");
+            SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
+            //SetHeader("Accept-Encoding", "gzip, deflate");
+            SetHeader("Accept-Language", "ja,en-US;q=0.8,en;q=0.6");
+#endif
         }
 
         public List<KeyValuePair<String, String>> Headers = new List<KeyValuePair<string, string>>();
+        public void SetHeader(String key, String value)
+        {
+            var _key=key.ToLower();
+            var header=Headers.Select((kv, i) => new { i, kv }).FirstOrDefault(x => x.kv.Key.ToLower() == _key);
+            if (header != null)
+            {
+                // update
+                Headers[header.i]= new KeyValuePair<string,string>(key, value);
+            }
+            else
+            {
+                // add
+                Headers.Add(new KeyValuePair<string, string>(key, value));
+            }
+        }
 
         public Uri Uri { get; private set; }
+
+        public Byte[] PostData { get; private set; }
+        public void SetPostData(Byte[] postData)
+        {
+            Method = MethodType.POST;
+            PostData = postData;
+            if (postData != null && postData.Length > 0)
+            {
+                SetHeader("Content-Length", postData.Length.ToString());
+                SetHeader("Content-Type", "application/x-www-form-urlencoded");
+            }
+        }
 
         public IObservable<HttpConnection> Connect()
         {
             var client = new TcpClient();
-            return Observable.FromAsyncPattern<string, int>(
+            return 
+                from _ in Observable.FromAsyncPattern<string, int>(
                 client.BeginConnect, client.EndConnect)(Uri.Host, Uri.Port)
-                .Select(_ =>
-                {
-                    if (Uri.Scheme == "https")
-                    {
-                        return new HttpsConnection(Uri, client);
-                    }
-                    else
-                    {
-                        return new HttpConnection(Uri, client);
-                    }
-                })
-                .Do(x =>
-                {
-                    x.Write(ToString(MethodType.GET));
-                })
-                ;
+                let connection = (Uri.Scheme == "https") 
+                ? new HttpsConnection(Uri, client)
+                : new HttpConnection(Uri, client)
+                from wait_for_write_request_header in connection.Write(ToString())
+                from wait_for_write_request_body in ((Method == MethodType.POST && PostData != null && PostData.Length > 0)
+                ? connection.Write(PostData)
+                : Observable.Return(Unit.Default))
+                select connection;
         }
 
-        public String GetHeadline(MethodType method)
+        public String GetMethodline(MethodType method)
         {
-            return String.Format("{0} {1} HTTP/1.1\r\n"
+            return String.Format("{0} {1} HTTP/{2}.{3}\r\n"
                 , method
                 , Uri.PathAndQuery
+                , Major, Minor
                 );
         }
 
-        public String ToString(MethodType method)
+        public override String ToString()
         {
-            return GetHeadline(method)
+            return GetMethodline(Method)
                 + String.Join("", Headers.Select(x => String.Format("{0}: {1}\r\n", x.Key, x.Value)))
                 + "\r\n"
                 ;
@@ -653,13 +702,22 @@ namespace ReactiveWeb
                 // body
                 if (contentLength.HasValue)
                 {
-                    // fixsized body
-                    byteObservable
-                    .Buffer(contentLength.Value)
-                    .Take(1)
-                    .Subscribe(m_bodyObservable)
-                    .AddTo(disposable)
-                    ;
+                    if (contentLength.Value > 0)
+                    {
+                        // fixsized body
+                        byteObservable
+                        .Buffer(contentLength.Value)
+                        .Take(1)
+                        .Subscribe(m_bodyObservable)
+                        .AddTo(disposable)
+                        ;
+                    }
+                    else
+                    {
+                        Observable.Return(new List<Byte>()).Subscribe(m_bodyObservable)
+                            .AddTo(disposable)
+                            ;
+                    }
                 }
                 else if (isChunked)
                 {
