@@ -14,6 +14,7 @@ using System.Text;
 
 namespace ReactiveWeb
 {
+    #region Observable
     static class IObservableExtensions
     {
         /// <summary>
@@ -146,7 +147,9 @@ namespace ReactiveWeb
             return Observable.Using(() => source, _ => bytes);
         }
     }
+    #endregion
 
+    #region HttpConnection
     public class HttpConnection : IDisposable
     {
         protected Uri m_uri;
@@ -352,7 +355,9 @@ namespace ReactiveWeb
             }
         }
     }
+    #endregion
 
+    #region HttpRequest
     public enum MethodType
     {
         GET,
@@ -375,9 +380,13 @@ namespace ReactiveWeb
 #if false
             SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10240");
             SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
-            //SetHeader("Accept-Encoding", "gzip, deflate");
             SetHeader("Accept-Language", "ja,en-US;q=0.8,en;q=0.6");
 #endif
+        }
+
+        public void EnableEncoding()
+        {
+            SetHeader("Accept-Encoding", "gzip, deflate");
         }
 
         public List<KeyValuePair<String, String>> Headers = new List<KeyValuePair<string, string>>();
@@ -446,7 +455,9 @@ namespace ReactiveWeb
                 ;
         }
     }
+    #endregion
 
+    #region HttpResponseObserver
     class CRLFDetector
     {
         List<Byte> m_queue = new List<byte>() { default(Byte) };
@@ -550,7 +561,7 @@ namespace ReactiveWeb
         }
     }
 
-    public abstract class HttpSubjectBase : IObserver<HttpConnection>, IDisposable
+    public abstract class HttpResponseObserverBase : IObserver<HttpConnection>, IDisposable
     {
         CompositeDisposable m_disposable = new CompositeDisposable();
 
@@ -558,7 +569,7 @@ namespace ReactiveWeb
         Action<Exception> m_errorHandler;
         int m_readBufferSize;
 
-        public HttpSubjectBase(int readBufferSize = 1024, IScheduler scheduler = null, Action<Exception> errorHandler = null)
+        public HttpResponseObserverBase(int readBufferSize = 1024, IScheduler scheduler = null, Action<Exception> errorHandler = null)
         {
             m_readBufferSize = readBufferSize;
             m_scheduler = scheduler;
@@ -680,7 +691,7 @@ namespace ReactiveWeb
         #endregion
     }
 
-    public class HttpRawByteSubject : HttpSubjectBase
+    public class ByteStreamHttpResponseObserver : HttpResponseObserverBase
     {
         Subject<Byte> m_bodyObservable = new Subject<Byte>();
         public IObservable<Byte> BodyObservable
@@ -700,7 +711,7 @@ namespace ReactiveWeb
         }
     }
 
-    public class HttpChunkBytesSubject: HttpSubjectBase
+    public class ChunkedHttpResponseObserver: HttpResponseObserverBase
     {
         Subject<IList<Byte>> m_bodyObservable = new Subject<IList<Byte>>();
         public IObservable<IList<Byte>> BodyObservable
@@ -792,4 +803,5 @@ namespace ReactiveWeb
             return disposable;
         }
     }
+    #endregion
 }

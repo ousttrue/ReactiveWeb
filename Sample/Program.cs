@@ -17,10 +17,11 @@ namespace Sample
             // request
             var uri = new Uri(args[0]);
             var request = new HttpRequest(uri);
+            //request.EnableEncoding();
             Console.Write(request.ToString());
 
 #if USE_BYTES_BODY
-            using (var subject = new HttpChunkBytesSubject())
+            using (var subject = new ChunkedHttpResponseObserver())
             {
                 var body = new Subject<IList<Byte>>();
                 body.Subscribe(x =>
