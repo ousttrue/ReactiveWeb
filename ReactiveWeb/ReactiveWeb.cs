@@ -149,24 +149,61 @@ namespace ReactiveWeb
 
     public class HttpConnection : IDisposable
     {
-        Stream m_stream;
+        protected Uri m_uri;
+        protected Stream m_stream;
 
-        public HttpConnection(Uri uri, TcpClient connection)
+        public HttpConnection(Uri uri)
         {
-            m_disposable.Add(connection);
-            var stream = GetStream(uri, connection);
-            m_stream = stream;
-            m_disposable.Add(m_stream);
-
-            Status = String.Format("connected from {0} to {1}"
-                , connection.Client.LocalEndPoint
-                , connection.Client.RemoteEndPoint
-                );
+            m_uri = uri;
         }
 
-        protected virtual Stream GetStream(Uri _, TcpClient connection)
+        public static HttpConnection Create(Uri uri)
         {
-            return connection.GetStream();
+            if (uri.Scheme == "https")
+            {
+                return new HttpsConnection(uri);
+            }
+            else
+            {
+                return new HttpConnection(uri);
+            }
+        }
+
+        public IObservable<HttpConnection> Connect()
+        {
+            var client = new TcpClient();
+            m_disposable.Add(client);
+
+            return
+                Observable.FromAsyncPattern<string, int>(
+                client.BeginConnect, client.EndConnect)(m_uri.Host, m_uri.Port)
+                .Do(_ =>
+                {
+                    Status = String.Format("connected from {0} to {1}"
+                        , client.Client.LocalEndPoint
+                        , client.Client.RemoteEndPoint
+                        );
+                    m_stream=GetStream(client);
+                    m_disposable.Add(m_stream);
+                })
+                .Select(_ => this)
+                ;
+        }
+
+        public IObservable<Unit> SendRequest(HttpRequest request)
+        {
+            return
+            from wait_for_write_request_header in Write(request.ToString())
+            from wait_for_write_request_body in ((request.Method == MethodType.POST && request.PostData != null && request.PostData.Length > 0)
+            ? Write(request.PostData)
+            : Observable.Return(Unit.Default))
+            select wait_for_write_request_body;
+            ;
+        }
+
+        protected virtual Stream GetStream(TcpClient client)
+        {
+            return client.GetStream();
         }    
 
         public String Status
@@ -247,17 +284,17 @@ namespace ReactiveWeb
 
     public class HttpsConnection: HttpConnection
     {
-        public HttpsConnection(Uri uri, TcpClient connection):base(uri, connection)
+        public HttpsConnection(Uri uri):base(uri)
         {
         }
 
-        protected override Stream GetStream(Uri uri, TcpClient connection)
+        protected override Stream GetStream(TcpClient connection)
         {
             var stream = connection.GetStream();
             var sslStream = new SslStream(stream, false, RemoteCertificateNoValidationCallback);
             //サーバーの認証を行う
             //これにより、RemoteCertificateValidationCallbackメソッドが呼ばれる
-            sslStream.AuthenticateAsClient(uri.Host);
+            sslStream.AuthenticateAsClient(m_uri.Host);
 
             return sslStream;
         }
@@ -374,22 +411,6 @@ namespace ReactiveWeb
             }
         }
 
-        public IObservable<HttpConnection> Connect()
-        {
-            var client = new TcpClient();
-            return 
-                from _ in Observable.FromAsyncPattern<string, int>(
-                client.BeginConnect, client.EndConnect)(Uri.Host, Uri.Port)
-                let connection = (Uri.Scheme == "https") 
-                ? new HttpsConnection(Uri, client)
-                : new HttpConnection(Uri, client)
-                from wait_for_write_request_header in connection.Write(ToString())
-                from wait_for_write_request_body in ((Method == MethodType.POST && PostData != null && PostData.Length > 0)
-                ? connection.Write(PostData)
-                : Observable.Return(Unit.Default))
-                select connection;
-        }
-
         public String GetMethodline(MethodType method)
         {
             return String.Format("{0} {1} HTTP/{2}.{3}\r\n"
@@ -404,6 +425,17 @@ namespace ReactiveWeb
             return GetMethodline(Method)
                 + String.Join("", Headers.Select(x => String.Format("{0}: {1}\r\n", x.Key, x.Value)))
                 + "\r\n"
+                ;
+        }
+    }
+
+    public static class HttpRequestExtensions
+    {
+        public static IObservable<HttpConnection> ConnectAndRequest(this HttpRequest request)
+        {
+            return HttpConnection.Create(request.Uri)
+                .Connect()
+                .Do(x => x.SendRequest(request))
                 ;
         }
     }
@@ -704,7 +736,7 @@ namespace ReactiveWeb
                 {
                     if (contentLength.Value > 0)
                     {
-                        // fixsized body
+                        // fixed body
                         byteObservable
                         .Buffer(contentLength.Value)
                         .Take(1)
@@ -714,6 +746,7 @@ namespace ReactiveWeb
                     }
                     else
                     {
+                        // empty body
                         Observable.Return(new List<Byte>()).Subscribe(m_bodyObservable)
                             .AddTo(disposable)
                             ;

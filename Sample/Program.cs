@@ -74,16 +74,16 @@ namespace Sample
                 }
                 );
 
-                // execute
-                var connectObservable = request.Connect().Publish();
-
+                ////////////////////////////
+                // connect
+                ////////////////////////////
+                var connectObservable = request.ConnectAndRequest().Publish();
                 connectObservable.Subscribe(x =>
                 {
                     Console.WriteLine(x);
                 });
-
                 var cancel = connectObservable
-                .Subscribe(subject);
+                    .Subscribe(subject);
 
                 connectObservable.Connect();
 
