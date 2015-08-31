@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -722,12 +723,49 @@ namespace ReactiveWeb
             }
         }
 
+        public static Byte[] Decode(Byte[] src, String encoding)
+        {
+            switch(encoding)
+            {
+                case "gzip":
+                    using (var ms = new MemoryStream(src))
+                    using (var ds = new GZipStream(ms, CompressionMode.Decompress))
+                    {
+                        var list = new List<Byte>();
+                        int num;
+                        var buf = new Byte[1024];
+                        while ((num = ds.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            list.AddRange(buf.Take(num));
+                        }
+                        return list.ToArray();
+                    }
+
+                case "deflate":
+                    using (var ms = new MemoryStream(src))
+                    using (var ds = new DeflateStream(ms, CompressionMode.Decompress))
+                    {
+                        var list = new List<Byte>();
+                        int num;
+                        var buf = new Byte[1024];
+                        while ((num = ds.Read(buf, 0, buf.Length)) > 0)
+                        {
+                            list.AddRange(buf.Take(num));
+                        }
+                        return list.ToArray();
+                    }
+            }
+
+            return src;
+        }
+
         protected override IDisposable InitializeByteObservable(IObservable<Byte> byteObservable)
         {
             var disposable = new CompositeDisposable();
 
             int? contentLength = null;
             bool isChunked = false;
+            string contentEncoding = null;
 
             // response headers
             HeaderObservable.Subscribe(x =>
@@ -745,10 +783,14 @@ namespace ReactiveWeb
                         }
                         break;
 
+                    case "content-encoding":
+                        contentEncoding = x.Value.ToLower();
+                        break;
                 }
             }
             , () =>
             {
+ 
                 // body
                 if (contentLength.HasValue)
                 {
@@ -758,6 +800,7 @@ namespace ReactiveWeb
                         byteObservable
                         .Buffer(contentLength.Value)
                         .Take(1)
+                        .Select(x => Decode(x.ToArray(), contentEncoding))
                         .Subscribe(m_bodyObservable)
                         .AddTo(disposable)
                         ;
@@ -790,7 +833,7 @@ namespace ReactiveWeb
                     , m_bodyObservable.OnError
                     , () =>
                     {
-                        m_bodyObservable.OnNext(body);
+                        m_bodyObservable.OnNext(Decode(body.ToArray(), contentEncoding));
                         m_bodyObservable.OnCompleted();
                     })
                     .AddTo(disposable)

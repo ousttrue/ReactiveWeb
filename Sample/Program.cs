@@ -17,7 +17,7 @@ namespace Sample
             // request
             var uri = new Uri(args[0]);
             var request = new HttpRequest(uri);
-            //request.EnableEncoding();
+            request.EnableEncoding();
             Console.Write(request.ToString());
 
 #if USE_BYTES_BODY
