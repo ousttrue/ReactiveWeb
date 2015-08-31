@@ -145,7 +145,8 @@ namespace ReactiveWeb
                 var scheduledWork = scheduler.Schedule(initialState, iterator);
                 return new CompositeDisposable(currentStateSubscription, scheduledWork);
             });
-            return Observable.Using(() => source, _ => bytes);
+            //return Observable.Using(() => source, _ => bytes);
+            return bytes;
         }
     }
     #endregion
@@ -176,7 +177,6 @@ namespace ReactiveWeb
         public IObservable<HttpConnection> Connect()
         {
             var client = new TcpClient();
-            m_disposable.Add(client);
 
             return
                 Observable.FromAsyncPattern<string, int>(
@@ -188,7 +188,8 @@ namespace ReactiveWeb
                         , client.Client.RemoteEndPoint
                         );
                     m_stream=GetStream(client);
-                    m_disposable.Add(m_stream);
+                    //m_disposable.Add(m_stream);
+                    m_disposable.Add(client);
                 })
                 .Select(_ => this)
                 ;
@@ -207,9 +208,10 @@ namespace ReactiveWeb
 
         protected virtual Stream GetStream(TcpClient client)
         {
-            return client.GetStream();
+            var stream=client.GetStream();
+            return stream;
         }    
-
+       
         public String Status
         {
             get;
@@ -294,7 +296,7 @@ namespace ReactiveWeb
 
         protected override Stream GetStream(TcpClient connection)
         {
-            var stream = connection.GetStream();
+            var stream = base.GetStream(connection);
             var sslStream = new SslStream(stream, false, RemoteCertificateNoValidationCallback);
             //サーバーの認証を行う
             //これにより、RemoteCertificateValidationCallbackメソッドが呼ばれる
@@ -566,15 +568,24 @@ namespace ReactiveWeb
     {
         CompositeDisposable m_disposable = new CompositeDisposable();
 
-        IScheduler m_scheduler;
-        Action<Exception> m_errorHandler;
-        int m_readBufferSize;
-
-        public HttpResponseObserverBase(int readBufferSize = 1024, IScheduler scheduler = null, Action<Exception> errorHandler = null)
+        IScheduler m_scheduler = NewThreadScheduler.Default;
+        public IScheduler Scheduler
         {
-            m_readBufferSize = readBufferSize;
-            m_scheduler = scheduler;
-            m_errorHandler = errorHandler;
+            get { return m_scheduler; }
+            set
+            {
+                m_scheduler = value;
+            }
+        }
+
+        int m_readBufferSize=1024;
+        public int ReadBufferSize
+        {
+            get { return m_readBufferSize; }
+            set
+            {
+                m_readBufferSize = value;
+            }
         }
 
         Subject<String> m_statusObservable = new Subject<string>();
@@ -602,21 +613,14 @@ namespace ReactiveWeb
 
         public virtual void OnError(Exception error)
         {
-            if (m_errorHandler != null)
-            {
-                m_errorHandler(error);
-            }
-            else
-            {
-                throw error;
-            }
+            throw error;
         }
 
         public void OnNext(HttpConnection connect)
         {
             m_disposable.Add(connect);
 
-            var byteObservable = connect.Read(m_readBufferSize, m_scheduler)
+            var byteObservable = connect.Read(ReadBufferSize, Scheduler)
                 .Publish()
                 ;
 
@@ -628,9 +632,25 @@ namespace ReactiveWeb
             ;
 
             // status
+            var statusline = default(string);
             lineObservable.Take(1)
                 .Select(x => Encoding.ASCII.GetString(x.ToArray()).TrimEnd())
-                .Subscribe(m_statusObservable)
+                .Subscribe(x =>
+                {
+                    statusline = x;
+                    m_statusObservable.OnNext(x);
+                }
+                , ex => m_statusObservable.OnError(ex)
+                , () =>
+                {
+                    if (String.IsNullOrEmpty(statusline))
+                    {
+                        // error
+                        m_statusObservable.OnError(new InvalidOperationException("no statusline"));
+                    }
+                    m_statusObservable.OnCompleted();
+                }
+                )
                 .AddTo(m_disposable)
                 ;
 
@@ -645,7 +665,9 @@ namespace ReactiveWeb
                 ;
 
             // body
-            InitializeByteObservable(byteObservable.SkipWhile(_ => !detector.IsHeaderEnd))
+            InitializeByteObservable(byteObservable
+                .SkipWhile(_ => !detector.IsHeaderEnd)
+                )
                 .AddTo(m_disposable)
                 ;            
 
@@ -703,6 +725,11 @@ namespace ReactiveWeb
             }
         }
 
+        public override void OnError(Exception error)
+        {
+            m_bodyObservable.OnError(error);
+        }
+
         protected override IDisposable InitializeByteObservable(IObservable<Byte> byteObservable)
         {
             return
@@ -721,6 +748,11 @@ namespace ReactiveWeb
             {
                 return m_bodyObservable;
             }
+        }
+
+        public override void OnError(Exception error)
+        {
+            m_bodyObservable.OnError(error);
         }
 
         public static Byte[] Decode(Byte[] src, String encoding)
@@ -767,9 +799,12 @@ namespace ReactiveWeb
             bool isChunked = false;
             string contentEncoding = null;
 
+            var headers=new List<KeyValuePair<String, String>>();
+
             // response headers
             HeaderObservable.Subscribe(x =>
             {
+                headers.Add(x);
                 switch (x.Key.ToLower())
                 {
                     case "content-length":
@@ -790,7 +825,6 @@ namespace ReactiveWeb
             }
             , () =>
             {
- 
                 // body
                 if (contentLength.HasValue)
                 {
@@ -826,7 +860,8 @@ namespace ReactiveWeb
                 {
                     // no size body
                     var body = new List<Byte>();
-                    byteObservable.Subscribe(x =>
+                    byteObservable
+                    .Subscribe(x =>
                     {
                         body.Add(x);
                     }
