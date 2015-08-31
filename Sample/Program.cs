@@ -10,14 +10,53 @@ using System.Reactive.Subjects;
 
 namespace Sample
 {
-    class Program
+    class HttpManager
     {
-        static void Main(string[] args)
+        HttpConnection m_connection;
+
+        IObservable<HttpConnection> GetConnection(Uri uri)
         {
+            if(m_connection!= null 
+                && m_connection.Uri.Host==uri.Host 
+                && m_connection.Uri.Port==uri.Port
+                && m_connection.IsConnected
+                )
+            {
+                return Observable.Return(m_connection)
+                    .Do(x =>
+                    {
+                        Console.WriteLine("<KeepAlive>");
+                    })
+                    ;
+            }
+            else
+            {
+                return HttpConnection.Create(uri).Connect()
+                    .Do(x => {
+                        m_connection = x;
+                        Console.WriteLine(x);
+                    })
+                    ;
+            }
+        }
+
+        void Close()
+        {
+            if(m_connection!=null && m_connection.IsConnected)
+            {
+                (m_connection as IDisposable).Dispose();
+                m_connection = null;
+            }
+        }
+
+        public void Request(Uri uri)
+        {
+            Console.WriteLine("############################################################");
+
             // request
-            var uri = new Uri(args[0]);
             var request = new HttpRequest(uri);
             request.EnableEncoding();
+            request.SetKeepAlive(true);
             Console.Write(request.ToString());
 
 #if USE_BYTES_BODY
@@ -37,6 +76,14 @@ namespace Sample
                     Console.WriteLine("body end");
                 });
                 subject.BodyObservable.Subscribe(body);
+
+                bool keepAlive = true;
+                subject.KeepAliveObservalbe
+                    .Subscribe(x =>
+                    {
+                        // disconnect
+                        keepAlive = x;
+                    });
 #else
             using (var subject = new HttpRawByteSubject())
             {
@@ -78,18 +125,38 @@ namespace Sample
                 ////////////////////////////
                 // connect
                 ////////////////////////////
-                var connectObservable = request.ConnectAndRequest().Publish();
-                connectObservable.Subscribe(x =>
-                {
-                    Console.WriteLine(x);
-                });
-                var cancel = connectObservable
-                    .Subscribe(subject);
+                GetConnection(uri)
+                    .Do(x =>
+                    {
+                        x.SendRequestObservable(request)
+                        .Subscribe(_ =>
+                        {
 
-                connectObservable.Connect();
+                        });
+                    })
+                    .Subscribe(subject)
+                    ;
 
                 // wait...
                 body.Wait();
+
+                if (!keepAlive)
+                {
+                    Close();
+                }
+            }
+        }
+    }
+
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            var manager = new HttpManager();
+
+            foreach (var arg in args)
+            {
+                manager.Request(new Uri(arg));
             }
 
             // hit enter key

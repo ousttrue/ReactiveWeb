@@ -13,6 +13,17 @@ using System.Reactive.Subjects;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
+/// <summary>
+/// HTTP/1.0
+/// http://www.spencernetwork.org/reference/rfc1945-ja-HTTP1.0.txt
+/// 
+/// HTTP/1.1
+/// 
+/// https://www.ietf.org/rfc/rfc2068.txt
+/// http://www.spencernetwork.org/reference/rfc2068-ja-HTTP1.1.txt
+/// https://www.ietf.org/rfc/rfc2616.txt
+/// http://www.spencernetwork.org/reference/rfc2616-ja-HTTP1.1.txt
+/// </summary>
 namespace ReactiveWeb
 {
     #region Observable
@@ -155,7 +166,21 @@ namespace ReactiveWeb
     public class HttpConnection : IDisposable
     {
         protected Uri m_uri;
+        public Uri Uri
+        {
+            get { return m_uri; }
+        }
+
+        TcpClient m_client;
+
         protected Stream m_stream;
+        public bool IsConnected
+        {
+            get
+            {
+                return m_client.Client.Connected;
+            }
+        }
 
         public HttpConnection(Uri uri)
         {
@@ -177,6 +202,7 @@ namespace ReactiveWeb
         public IObservable<HttpConnection> Connect()
         {
             var client = new TcpClient();
+            m_client = client;
 
             return
                 Observable.FromAsyncPattern<string, int>(
@@ -223,9 +249,17 @@ namespace ReactiveWeb
             return Status;
         }
 
+        Subject<Byte> m_read;
+
         public IObservable<Byte> Read(int bufferSize=1024, IScheduler scheduler=null)
         {
-            return m_stream.ToObservable(bufferSize, scheduler!=null ? scheduler : NewThreadScheduler.Default);
+            if (m_read == null)
+            {
+                m_read = new Subject<byte>();
+                m_stream.ToObservable(bufferSize, scheduler != null ? scheduler : NewThreadScheduler.Default)
+                    .Subscribe(m_read);
+            }
+            return m_read;
         }
 
         public IObservable<Unit> Write(Byte[] bytes)
@@ -379,12 +413,8 @@ namespace ReactiveWeb
             Major = 1;
             Minor = 1;
             Uri = uri;
-            SetHeader("Host", uri.Host);
-#if false
             SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10240");
-            SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8");
-            SetHeader("Accept-Language", "ja,en-US;q=0.8,en;q=0.6");
-#endif
+            SetHeader("Host", uri.Host);
         }
 
         public void EnableEncoding()
@@ -392,11 +422,23 @@ namespace ReactiveWeb
             SetHeader("Accept-Encoding", "gzip, deflate");
         }
 
+        public void SetKeepAlive(bool enable)
+        {
+            if (enable)
+            {
+                SetHeader("Connection", "keep-alive");
+            }
+            else
+            {
+                SetHeader("Connection", "close");
+            }
+        }
+
         public List<KeyValuePair<String, String>> Headers = new List<KeyValuePair<string, string>>();
         public void SetHeader(String key, String value)
         {
-            var _key=key.ToLower();
-            var header=Headers.Select((kv, i) => new { i, kv }).FirstOrDefault(x => x.kv.Key.ToLower() == _key);
+            var keyLower=key.ToLower();
+            var header=Headers.Select((kv, i) => new { i, kv }).FirstOrDefault(x => x.kv.Key.ToLower() == keyLower);
             if (header != null)
             {
                 // update
@@ -406,6 +448,17 @@ namespace ReactiveWeb
             {
                 // add
                 Headers.Add(new KeyValuePair<string, string>(key, value));
+            }
+        }
+
+        public void RemoveHeader(String key)
+        {
+            var keyLower = key.ToLower();
+            while (true)
+            {
+                var header = Headers.Select((kv, i) => new { i, kv }).FirstOrDefault(x => x.kv.Key.ToLower() == keyLower);
+                if (header == null) break;
+                Headers.RemoveAt(header.i);
             }
         }
 
@@ -618,10 +671,9 @@ namespace ReactiveWeb
 
         public void OnNext(HttpConnection connect)
         {
-            m_disposable.Add(connect);
+            //m_disposable.Add(connect);
 
             var byteObservable = connect.Read(ReadBufferSize, Scheduler)
-                .Publish()
                 ;
 
             var detector = new CRLFDetector();
@@ -672,7 +724,6 @@ namespace ReactiveWeb
                 ;            
 
             lineObservable.Connect();
-            byteObservable.Connect();
         }
 
         protected abstract IDisposable InitializeByteObservable(IObservable<Byte> byteObservable);
@@ -750,6 +801,15 @@ namespace ReactiveWeb
             }
         }
 
+        Subject<Boolean> m_keepAliveObservable = new Subject<bool>();
+        public IObservable<bool> KeepAliveObservalbe
+        {
+            get
+            {
+                return m_keepAliveObservable;
+            }
+        }
+
         public override void OnError(Exception error)
         {
             m_bodyObservable.OnError(error);
@@ -798,6 +858,7 @@ namespace ReactiveWeb
             int? contentLength = null;
             bool isChunked = false;
             string contentEncoding = null;
+            bool keepAlive = false;
 
             var headers=new List<KeyValuePair<String, String>>();
 
@@ -821,10 +882,23 @@ namespace ReactiveWeb
                     case "content-encoding":
                         contentEncoding = x.Value.ToLower();
                         break;
+
+                    case "connection":
+                        if (x.Value.ToLower() == "close")
+                        {
+                            keepAlive = false;
+                        }
+                        else if(x.Value.ToLower() == "keep-alive")
+                        {
+                            keepAlive = true;
+                        }
+                        break;
                 }
             }
             , () =>
             {
+                m_keepAliveObservable.OnNext(keepAlive);
+
                 // body
                 if (contentLength.HasValue)
                 {
