@@ -2,8 +2,8 @@
 C# web stream library using Rx.
 
 # ToDo
-* push method
-* ssl
-* keep-alive
-* compress
+* [ ]post method
+* [x]ssl
+* [ ]compress
+* [ ]keep-alive
 

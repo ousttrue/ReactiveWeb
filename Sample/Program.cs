@@ -21,10 +21,42 @@ namespace Sample
 
 #if USE_BYTES_BODY
             using (var subject = new HttpChunkBytesSubject())
+            {
+                var body = new Subject<IList<Byte>>();
+                body.Subscribe(x =>
+                {
+                    Console.WriteLine("body: " + x.Count + " bytes");
+                }
+                , ex =>
+                {
+                    Console.WriteLine(ex);
+                }
+                , () =>
+                {
+                    Console.WriteLine("body end");
+                });
+                subject.BodyObservable.Subscribe(body);
 #else
             using (var subject = new HttpRawByteSubject())
-#endif
             {
+                var body = new Subject<Byte>();
+                var buffer = new List<Byte>();
+                body.Subscribe(x =>
+                {
+                    buffer.Add(x);
+                }
+                , ex =>
+                {
+                    Console.WriteLine(ex);
+                }
+                , () =>
+                {
+                    Console.WriteLine("body: " + buffer.Count + " bytes");
+                    Console.WriteLine("body end");
+                });
+                subject.BodyObservable.Subscribe(body);
+#endif
+
                 // statusline
                 subject.StatusObservable.Subscribe(x =>
                 {
@@ -42,43 +74,18 @@ namespace Sample
                 }
                 );
 
-                // body
-#if USE_BYTES_BODY
-                var body = new Subject<IList<Byte>>();
-                body.Subscribe(x =>
-                {
-                    Console.WriteLine("body: " + x.Count + " bytes");
-                }
-                , ex =>
-                {
-                    Console.WriteLine(ex);
-                }
-                , () =>
-                {
-                    Console.WriteLine("body end");
-                });
-#else
-                var body = new Subject<Byte>();
-                var buffer = new List<Byte>();
-                body.Subscribe(x =>
-                {
-                    buffer.Add(x);
-                }
-                , ex =>
-                {
-                    Console.WriteLine(ex);
-                }
-                , () =>
-                {
-                    Console.WriteLine("body: " + buffer.Count + " bytes");
-                    Console.WriteLine("body end");
-                });
-#endif
-                subject.BodyObservable.Subscribe(body);
-
                 // execute
-                var cancel =
-                request.Connect().Subscribe(subject);
+                var connectObservable = request.Connect().Publish();
+
+                connectObservable.Subscribe(x =>
+                {
+                    Console.WriteLine(x);
+                });
+
+                var cancel = connectObservable
+                .Subscribe(subject);
+
+                connectObservable.Connect();
 
                 // wait...
                 body.Wait();

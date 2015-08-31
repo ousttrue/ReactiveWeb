@@ -2,12 +2,14 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 namespace ReactiveWeb
@@ -149,11 +151,33 @@ namespace ReactiveWeb
     {
         Stream m_stream;
 
-        public HttpConnection(TcpClient connection)
+        public HttpConnection(Uri uri, TcpClient connection)
         {
             m_disposable.Add(connection);
-            m_stream = connection.GetStream();
+            var stream = GetStream(uri, connection);
+            m_stream = stream;
             m_disposable.Add(m_stream);
+
+            Status = String.Format("connected from {0} to {1}"
+                , connection.Client.LocalEndPoint
+                , connection.Client.RemoteEndPoint
+                );
+        }
+
+        protected virtual Stream GetStream(Uri _, TcpClient connection)
+        {
+            return connection.GetStream();
+        }    
+
+        public String Status
+        {
+            get;
+            private set;
+        }
+
+        public override string ToString()
+        {
+            return Status;
         }
 
         public IObservable<Byte> Read(int bufferSize=1024, IScheduler scheduler=null)
@@ -216,6 +240,67 @@ namespace ReactiveWeb
         #endregion
     }
 
+    public class HttpsConnection: HttpConnection
+    {
+        public HttpsConnection(Uri uri, TcpClient connection):base(uri, connection)
+        {
+        }
+
+        protected override Stream GetStream(Uri uri, TcpClient connection)
+        {
+            var stream = connection.GetStream();
+            var sslStream = new SslStream(stream, false, RemoteCertificateValidationCallback);
+            //サーバーの認証を行う
+            //これにより、RemoteCertificateValidationCallbackメソッドが呼ばれる
+            sslStream.AuthenticateAsClient(uri.Host);
+
+            return sslStream;
+        }
+
+        //サーバー証明書を検証するためのコールバックメソッド
+        private static Boolean RemoteCertificateValidationCallback(Object sender,
+            X509Certificate certificate,
+            X509Chain chain,
+            SslPolicyErrors sslPolicyErrors)
+        {
+            //PrintCertificate(certificate);
+
+            if (sslPolicyErrors == SslPolicyErrors.None)
+            {
+                //Console.WriteLine("サーバー証明書の検証に成功しました\n");
+                return true;
+            }
+            else
+            {
+                //何かサーバー証明書検証エラーが発生している
+
+                //SslPolicyErrors列挙体には、Flags属性があるので、
+                //エラーの原因が複数含まれているかもしれない。
+                //そのため、&演算子で１つ１つエラーの原因を検出する。
+                if ((sslPolicyErrors & SslPolicyErrors.RemoteCertificateChainErrors) ==
+                    SslPolicyErrors.RemoteCertificateChainErrors)
+                {
+                    throw new InvalidOperationException("ChainStatusが、空でない配列を返しました");
+                }
+
+                if ((sslPolicyErrors & SslPolicyErrors.RemoteCertificateNameMismatch) ==
+                    SslPolicyErrors.RemoteCertificateNameMismatch)
+                {
+                    throw new InvalidOperationException("証明書名が不一致です");
+                }
+
+                if ((sslPolicyErrors & SslPolicyErrors.RemoteCertificateNotAvailable) ==
+                    SslPolicyErrors.RemoteCertificateNotAvailable)
+                {
+                    throw new InvalidOperationException("証明書が利用できません");
+                }
+
+                //検証失敗とする
+                return false;
+            }
+        }
+    }
+
     public enum MethodType
     {
         GET,
@@ -224,22 +309,32 @@ namespace ReactiveWeb
 
     public class HttpRequest
     {
-        public List<KeyValuePair<String, String>> Headers = new List<KeyValuePair<string, string>>();
-
-        public Uri Uri { get; private set; }
-
         public HttpRequest(Uri uri)
         {
             Uri = uri;
             Headers.Add(new KeyValuePair<String, String>("Host", uri.Host));
         }
 
+        public List<KeyValuePair<String, String>> Headers = new List<KeyValuePair<string, string>>();
+
+        public Uri Uri { get; private set; }
+
         public IObservable<HttpConnection> Connect()
         {
             var client = new TcpClient();
             return Observable.FromAsyncPattern<string, int>(
                 client.BeginConnect, client.EndConnect)(Uri.Host, Uri.Port)
-                .Select(_ => new HttpConnection(client))
+                .Select(_ =>
+                {
+                    if (Uri.Scheme == "https")
+                    {
+                        return new HttpsConnection(Uri, client);
+                    }
+                    else
+                    {
+                        return new HttpConnection(Uri, client);
+                    }
+                })
                 .Do(x =>
                 {
                     x.Write(ToString(MethodType.GET));
