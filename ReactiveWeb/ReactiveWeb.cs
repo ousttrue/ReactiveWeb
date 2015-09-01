@@ -1,17 +1,23 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Threading;
+#if UNITY_EDITOR || UNITY_STANDALONE_WIN || UNITY_ANDROID
+using UniRx;
+#else
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Security.Cryptography.X509Certificates;
-using System.Text;
+#endif
 
 /// <summary>
 /// HTTP/1.0
@@ -26,6 +32,85 @@ using System.Text;
 /// </summary>
 namespace ReactiveWeb
 {
+    class CustomNewThreadScheduler : IScheduler
+    {
+        Queue<Action> m_queue = new Queue<Action>();
+        Thread m_thread;
+
+        public CustomNewThreadScheduler()
+        {
+            m_thread = new Thread(PollingLoop);
+            m_thread.Start();
+        }
+
+        /// <summary>
+        /// Polling loop
+        /// </summary>
+        void PollingLoop()
+        {
+            while (true)
+            {
+                // polling
+                Action action = null;
+                lock (((ICollection)m_queue).SyncRoot)
+                {
+                    if (m_queue.Count > 0)
+                    {
+                        action = m_queue.Dequeue();
+                    }
+                }
+                if (action == null)
+                {
+                    Thread.Sleep(300);
+                    continue;
+                }
+
+                // exec
+                //Logger.Log("Dequeue: " + m_thread.ManagedThreadId);
+                action();
+            }
+        }
+
+        public DateTimeOffset Now
+        {
+            get
+            {
+                return DateTimeOffset.Now;
+            }
+        }
+
+        public IDisposable Schedule(Action action)
+        {
+            lock (((ICollection)m_queue).SyncRoot)
+            {
+                //Logger.Log("Enqueue: " + m_thread.ManagedThreadId);
+                m_queue.Enqueue(action);
+            }
+            return Disposable.Empty;
+        }
+
+        public IDisposable Schedule(TimeSpan dueTime, Action action)
+        {
+            throw new NotImplementedException();
+        }
+
+
+        public IDisposable Schedule<TState>(TState state, DateTimeOffset dueTime, Func<IScheduler, TState, IDisposable> action)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IDisposable Schedule<TState>(TState state, TimeSpan dueTime, Func<IScheduler, TState, IDisposable> action)
+        {
+            throw new NotImplementedException();
+        }
+
+        public IDisposable Schedule<TState>(TState state, Func<IScheduler, TState, IDisposable> action)
+        {
+            return Schedule(() => action(this, state));
+        }
+    }
+
     #region Observable
     static class IObservableExtensions
     {
@@ -53,7 +138,7 @@ namespace ReactiveWeb
         /// <summary>
         /// https://gist.github.com/Manuel-S/1fad0455d849e1e2df6c
         /// </summary>
-        public static IObservable<IList<TSource>> BufferWhile<TSource>(
+        public static IObservable<List<TSource>> BufferWhile<TSource>(
             this IObservable<TSource> source,
             Func<TSource, bool> condition)
         {
@@ -131,10 +216,10 @@ namespace ReactiveWeb
         {
             var bytes = Observable.Create<byte>(o =>
             {
-                var initialState = new StreamReaderState(source, buffersize);
+                var state = new StreamReaderState(source, buffersize);
                 var currentStateSubscription = new SerialDisposable();
-                Action<StreamReaderState, Action<StreamReaderState>> iterator =
-                (state, self) =>
+                Action<Action> iterator =
+                (self) =>
                 currentStateSubscription.Disposable = state.ReadNext()
                 .Subscribe(
                 bytesRead =>
@@ -145,7 +230,7 @@ namespace ReactiveWeb
                         {
                             o.OnNext(b);
                         }
-                        self(state);
+                        self();
                     }
                     else
                     {
@@ -153,16 +238,15 @@ namespace ReactiveWeb
                     }
                 },
                 o.OnError);
-                var scheduledWork = scheduler.Schedule(initialState, iterator);
+                var scheduledWork = scheduler.Schedule(iterator);
                 return new CompositeDisposable(currentStateSubscription, scheduledWork);
             });
-            //return Observable.Using(() => source, _ => bytes);
             return bytes;
         }
     }
-    #endregion
+#endregion
 
-    #region HttpConnection
+#region HttpConnection
     public class HttpConnection : IDisposable
     {
         protected Uri m_uri;
@@ -251,13 +335,12 @@ namespace ReactiveWeb
 
         Subject<Byte> m_read;
 
-        public IObservable<Byte> Read(int bufferSize=1024, IScheduler scheduler=null)
+        public IObservable<Byte> Read(int bufferSize, IScheduler scheduler)
         {
             if (m_read == null)
             {
                 m_read = new Subject<byte>();
-                m_stream.ToObservable(bufferSize, scheduler != null ? scheduler : NewThreadScheduler.Default)
-                    .Subscribe(m_read);
+                m_stream.ToObservable(bufferSize, scheduler).Subscribe(m_read);
             }
             return m_read;
         }
@@ -283,7 +366,7 @@ namespace ReactiveWeb
             m_stream.Flush();
         }
 
-        #region IDisposable Support
+#region IDisposable Support
         protected CompositeDisposable m_disposable = new CompositeDisposable();
 
         private bool disposedValue = false; // 重複する呼び出しを検出するには
@@ -319,7 +402,7 @@ namespace ReactiveWeb
             // TODO: 上のファイナライザーがオーバーライドされる場合は、次の行のコメントを解除してください。
             // GC.SuppressFinalize(this);
         }
-        #endregion
+#endregion
     }
 
     public class HttpsConnection: HttpConnection
@@ -392,9 +475,9 @@ namespace ReactiveWeb
             }
         }
     }
-    #endregion
+#endregion
 
-    #region HttpRequest
+#region HttpRequest
     public enum MethodType
     {
         GET,
@@ -488,7 +571,7 @@ namespace ReactiveWeb
         public override String ToString()
         {
             return GetMethodline(Method)
-                + String.Join("", Headers.Select(x => String.Format("{0}: {1}\r\n", x.Key, x.Value)))
+                + String.Join("", Headers.Select(x => String.Format("{0}: {1}\r\n", x.Key, x.Value)).ToArray())
                 + "\r\n"
                 ;
         }
@@ -511,9 +594,9 @@ namespace ReactiveWeb
                 ;
         }
     }
-    #endregion
+#endregion
 
-    #region HttpResponseObserver
+#region HttpResponseObserver
     class CRLFDetector
     {
         List<Byte> m_queue = new List<byte>() { default(Byte) };
@@ -591,11 +674,11 @@ namespace ReactiveWeb
 
     public static class TransferExtensions
     {
-        public static IObservable<IList<Byte>> HttpChunk(
+        public static IObservable<Byte[]> HttpChunk(
             this IObservable<Byte> source
             )
         {
-            return Observable.Create<IList<Byte>>(observer =>
+            return Observable.Create<Byte[]>(observer =>
             {
                 var chunkAggregator = new ChunkAggregator();
                 return source.Subscribe(value =>
@@ -604,7 +687,7 @@ namespace ReactiveWeb
                     if (chunk!= null)
                     {
                         // chunk body が終わりに到達
-                        observer.OnNext(chunk);
+                        observer.OnNext(chunk.ToArray());
                         if (chunk.Count == 0)
                         {
                             observer.OnCompleted();
@@ -621,8 +704,9 @@ namespace ReactiveWeb
     {
         CompositeDisposable m_disposable = new CompositeDisposable();
 
-        IScheduler m_scheduler = NewThreadScheduler.Default;
-        public IScheduler Scheduler
+        IScheduler m_scheduler = Scheduler.CurrentThread;
+
+        public IScheduler ReadScheduler
         {
             get { return m_scheduler; }
             set
@@ -673,7 +757,7 @@ namespace ReactiveWeb
         {
             //m_disposable.Add(connect);
 
-            var byteObservable = connect.Read(ReadBufferSize, Scheduler)
+            var byteObservable = connect.Read(ReadBufferSize, ReadScheduler)
                 ;
 
             var detector = new CRLFDetector();
@@ -728,7 +812,7 @@ namespace ReactiveWeb
 
         protected abstract IDisposable InitializeByteObservable(IObservable<Byte> byteObservable);
 
-        #region IDisposable Support
+#region IDisposable Support
         private bool disposedValue = false; // 重複する呼び出しを検出するには
 
         protected virtual void Dispose(bool disposing)
@@ -762,7 +846,7 @@ namespace ReactiveWeb
             // TODO: 上のファイナライザーがオーバーライドされる場合は、次の行のコメントを解除してください。
             // GC.SuppressFinalize(this);
         }
-        #endregion
+#endregion
     }
 
     public class ByteStreamHttpResponseObserver : HttpResponseObserverBase
@@ -792,8 +876,8 @@ namespace ReactiveWeb
 
     public class ChunkedHttpResponseObserver: HttpResponseObserverBase
     {
-        Subject<IList<Byte>> m_bodyObservable = new Subject<IList<Byte>>();
-        public IObservable<IList<Byte>> BodyObservable
+        Subject<Byte[]> m_bodyObservable = new Subject<Byte[]>();
+        public IObservable<Byte[]> BodyObservable
         {
             get
             {
@@ -820,7 +904,7 @@ namespace ReactiveWeb
             switch(encoding)
             {
                 case "gzip":
-                    using (var ms = new MemoryStream(src))
+                    using (var ms = new MemoryStream(src.ToArray()))
                     using (var ds = new GZipStream(ms, CompressionMode.Decompress))
                     {
                         var list = new List<Byte>();
@@ -834,7 +918,7 @@ namespace ReactiveWeb
                     }
 
                 case "deflate":
-                    using (var ms = new MemoryStream(src))
+                    using (var ms = new MemoryStream(src.ToArray()))
                     using (var ds = new DeflateStream(ms, CompressionMode.Decompress))
                     {
                         var list = new List<Byte>();
@@ -861,6 +945,14 @@ namespace ReactiveWeb
             bool keepAlive = false;
 
             var headers=new List<KeyValuePair<String, String>>();
+
+            // status
+            StatusObservable.Subscribe(x =>
+            {
+
+            }
+            , ex => m_bodyObservable.OnError(ex)
+            );
 
             // response headers
             HeaderObservable.Subscribe(x =>
@@ -895,6 +987,10 @@ namespace ReactiveWeb
                         break;
                 }
             }
+            , ex =>
+            {
+                m_bodyObservable.OnError(ex);
+            }
             , () =>
             {
                 m_keepAliveObservable.OnNext(keepAlive);
@@ -916,7 +1012,7 @@ namespace ReactiveWeb
                     else
                     {
                         // empty body
-                        Observable.Return(new List<Byte>()).Subscribe(m_bodyObservable)
+                        Observable.Return(new Byte[] { }).Subscribe(m_bodyObservable)
                             .AddTo(disposable)
                             ;
                     }
@@ -955,5 +1051,5 @@ namespace ReactiveWeb
             return disposable;
         }
     }
-    #endregion
+#endregion
 }

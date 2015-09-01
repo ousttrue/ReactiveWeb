@@ -6,4 +6,6 @@ C# web stream library using Rx.
 * [x]ssl
 * [x]content-encoding
 * [x]keep-alive
+* [x]UniRx compatible
+* [ ]use proxy
 
