@@ -32,14 +32,47 @@ using System.Reactive.Subjects;
 /// </summary>
 namespace ReactiveWeb
 {
+    /// <summary>
+    /// http://blogs.msdn.com/b/toub/archive/2006/04/12/blocking-queues.aspx
+    /// </summary>
+    /// <typeparam name="T"></typeparam>
+    class BlockingQueue<T>
+    {
+        private int _count = 0;
+        private Queue<T> _queue = new Queue<T>();
+
+        public T Dequeue()
+        {
+            lock (_queue)
+            {
+                while (_count <= 0) Monitor.Wait(_queue);
+                _count--;
+                return _queue.Dequeue();
+            }
+        }
+
+        public void Enqueue(T data)
+        {
+            if (data == null) throw new ArgumentNullException("data");
+            lock (_queue)
+            {
+                _queue.Enqueue(data);
+                _count++;
+                Monitor.Pulse(_queue);
+            }
+        }
+    }
+
     class CustomNewThreadScheduler : IScheduler
     {
-        Queue<Action> m_queue = new Queue<Action>();
+        BlockingQueue<Action> m_queue = new BlockingQueue<Action>();
         Thread m_thread;
 
         public CustomNewThreadScheduler()
         {
             m_thread = new Thread(PollingLoop);
+            m_thread.IsBackground = true;
+            m_thread.Name = "CustomNewThreadScheduler";
             m_thread.Start();
         }
 
@@ -51,19 +84,7 @@ namespace ReactiveWeb
             while (true)
             {
                 // polling
-                Action action = null;
-                lock (((ICollection)m_queue).SyncRoot)
-                {
-                    if (m_queue.Count > 0)
-                    {
-                        action = m_queue.Dequeue();
-                    }
-                }
-                if (action == null)
-                {
-                    Thread.Sleep(300);
-                    continue;
-                }
+                var action = m_queue.Dequeue();
 
                 // exec
                 //Logger.Log("Dequeue: " + m_thread.ManagedThreadId);
@@ -81,11 +102,8 @@ namespace ReactiveWeb
 
         public IDisposable Schedule(Action action)
         {
-            lock (((ICollection)m_queue).SyncRoot)
-            {
-                //Logger.Log("Enqueue: " + m_thread.ManagedThreadId);
-                m_queue.Enqueue(action);
-            }
+            //Logger.Log("Enqueue: " + m_thread.ManagedThreadId);
+            m_queue.Enqueue(action);
             return Disposable.Empty;
         }
 
