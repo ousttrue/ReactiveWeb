@@ -594,24 +594,6 @@ namespace ReactiveWeb
                 ;
         }
     }
-
-    public static class HttpRequestExtensions
-    {
-        public static IObservable<HttpConnection> ConnectAndRequest(this HttpRequest request)
-        {
-            return HttpConnection.Create(request.Uri)
-                .Connect()
-                .Do(x =>
-                {
-                    x.SendRequestObservable(request)
-                        .Subscribe(_ =>
-                        {
-
-                        });
-                })
-                ;
-        }
-    }
 #endregion
 
 #region HttpResponseObserver

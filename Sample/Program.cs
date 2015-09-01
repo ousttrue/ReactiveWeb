@@ -126,15 +126,20 @@ namespace Sample
                 // connect
                 ////////////////////////////
                 GetConnection(uri)
-                    .Do(x =>
+                    .Subscribe(x =>
                     {
+                        // ready to read
+                        subject.OnNext(x);
+
+                        // send request
                         x.SendRequestObservable(request)
                         .Subscribe(_ =>
                         {
 
                         });
-                    })
-                    .Subscribe(subject)
+                    }
+                    , subject.OnError
+                    )
                     ;
 
                 // wait...
