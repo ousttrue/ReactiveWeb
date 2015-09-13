@@ -264,7 +264,7 @@ namespace ReactiveWeb
     }
 #endregion
 
-#region HttpConnection
+    #region HttpConnection
     public class HttpConnection : IDisposable
     {
         protected Uri m_uri;
@@ -301,7 +301,7 @@ namespace ReactiveWeb
             }
         }
 
-        public IObservable<HttpConnection> Connect()
+        public IObservable<HttpConnection> ConnectObservable()
         {
             var client = new TcpClient();
             m_client = client;
@@ -493,13 +493,117 @@ namespace ReactiveWeb
             }
         }
     }
-#endregion
+    #endregion
 
-#region HttpRequest
+    #region HttpCookie
+    public class HttpCookieItem
+    {
+        Uri m_uri;
+
+        public String Key
+        {
+            get;
+            private set;
+        }
+
+        public String Value
+        {
+            get;
+            private set;
+        }
+
+        public HttpCookieItem(Uri uri, String key, String value
+            , IEnumerable<KeyValuePair<String, String>> options)
+        {
+            m_uri = uri;
+            Key = key;
+            Value = value;
+        }
+
+        public override string ToString()
+        {
+            return String.Format("[{0}: \"{1}\"]", Key, Value); ;
+        }
+    }
+
+    public class HttpCookieManager
+    {
+        List<HttpCookieItem> m_cookies = new List<HttpCookieItem>();
+
+        public HttpCookieManager()
+        {
+
+        }
+
+        public void Push(Uri uri, String cookieValue)
+        {
+            var splited =
+            cookieValue
+            .Split(';')
+            .Select(x => x.Split(new[] { '=' }, 2))
+            .Select(x => new KeyValuePair<String, String>(
+                x.First().Trim()
+                , x.Skip(1).First().Trim()))
+            ;
+            var kv = splited.First();
+            var key = kv.Key;
+            var lowerKey = key.ToLower();
+            var value = kv.Value;
+            if (value == "deleted")
+            {
+                while (true)
+                {
+                    var item = m_cookies.FirstOrDefault(x => x.Key.ToLower()==lowerKey);
+                    if (item == null) break;
+                    m_cookies.Remove(item);
+                }                
+            }
+            else
+            {
+                var item =
+                new HttpCookieItem(uri
+                                    , key, value
+                                    , splited.Skip(1));
+                bool found = false;
+                for(int i=0; i<m_cookies.Count; ++i)
+                {
+                    if(m_cookies[i].Key.ToLower()==lowerKey)
+                    {
+                        // 既存
+                        found = true;
+                        m_cookies[i] = item;
+                    }
+                }
+                if (!found)
+                {
+                    // 無かった
+                    m_cookies.Add(item);
+                }
+            }
+        }
+
+        public override string ToString()
+        {
+            return String.Join("\n", m_cookies.Select(x => x.ToString())) + "\n";
+        }
+
+        public String GetRequestValue()
+        {
+            return String.Join("; ", m_cookies.Select(x => x.Key + "=" + x.Value));
+        }
+    }
+    #endregion
+
+    #region HttpRequest
     public enum MethodType
     {
         GET,
         POST,
+    }
+
+    public class UrlForm: Dictionary<String, String>
+    {
+
     }
 
     public class HttpRequest
@@ -509,13 +613,21 @@ namespace ReactiveWeb
         public Int32 Major { get; set; }
         public Int32 Minor { get; set; }
 
-        public HttpRequest(Uri uri)
+        public HttpRequest(Uri uri, HttpCookieManager cookie)
         {
             Major = 1;
             Minor = 1;
             Uri = uri;
             SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/42.0.2311.135 Safari/537.36 Edge/12.10240");
             SetHeader("Host", uri.Host);
+            if(cookie!=null)
+            {
+                var cookievalue = cookie.GetRequestValue();
+                if (!String.IsNullOrEmpty(cookievalue))
+                {
+                    SetHeader("Cookie", cookievalue);
+                }
+            }
         }
 
         public void EnableEncoding()
@@ -576,6 +688,13 @@ namespace ReactiveWeb
                 SetHeader("Content-Type", "application/x-www-form-urlencoded");
             }
         }
+        public void SetPostData(UrlForm form)
+        {
+            var postText=
+            String.Join("&"
+            , form.Select(x => x.Key + "=" + x.Value));
+            SetPostData(Encoding.ASCII.GetBytes(postText));
+        }
 
         public String GetMethodline(MethodType method)
         {
@@ -596,7 +715,7 @@ namespace ReactiveWeb
     }
 #endregion
 
-#region HttpResponseObserver
+    #region HttpResponseObserver
     class CRLFDetector
     {
         List<Byte> m_queue = new List<byte>() { default(Byte) };
@@ -792,7 +911,7 @@ namespace ReactiveWeb
 
             // headers
             var headers = new List<KeyValuePair<String, String>>();
-            lineObservable.Skip(1).TakeWhile(x => x.Count > 2)
+            lineObservable.Skip(1).TakeWhile(x => x.Count > 2 && !detector.IsHeaderEnd)
                 .Select(x => Encoding.ASCII.GetString(x.ToArray()).TrimEnd())
                 .Select(x => x.Split(new[] { ':' }, 2))
                 .Select(x => new KeyValuePair<string, string>(x[0], x[1].TrimStart()))
@@ -876,8 +995,8 @@ namespace ReactiveWeb
 
     public class ChunkedHttpResponseObserver: HttpResponseObserverBase
     {
-        Subject<Byte[]> m_bodyObservable = new Subject<Byte[]>();
-        public IObservable<Byte[]> BodyObservable
+        Subject<Byte> m_bodyObservable = new Subject<Byte>();
+        public IObservable<Byte> BodyObservable
         {
             get
             {
@@ -1000,19 +1119,32 @@ namespace ReactiveWeb
                 {
                     if (contentLength.Value > 0)
                     {
+                        var observable =
+                            byteObservable
+                                .Take(contentLength.Value);
                         // fixed body
-                        byteObservable
-                        .Buffer(contentLength.Value)
-                        .Take(1)
-                        .Select(x => Decode(x.ToArray(), contentEncoding))
-                        .Subscribe(m_bodyObservable)
-                        .AddTo(disposable)
-                        ;
+                        if (String.IsNullOrEmpty(contentEncoding))
+                        {
+                            observable
+                                .Subscribe(m_bodyObservable)
+                                .AddTo(disposable)
+                                ;
+                        }
+                        else
+                        {
+                            // Decode TransferEncoding
+                            observable
+                                .ToArray()
+                                .Select(x => Decode(x, contentEncoding)).SelectMany(x => x)
+                                .Subscribe(m_bodyObservable)
+                                .AddTo(disposable)
+                                ;
+                        }
                     }
                     else
                     {
                         // empty body
-                        Observable.Return(new Byte[] { }).Subscribe(m_bodyObservable)
+                        Observable.Empty<byte>().Subscribe(m_bodyObservable)
                             .AddTo(disposable)
                             ;
                     }
@@ -1022,6 +1154,7 @@ namespace ReactiveWeb
                     // chunked body
                     byteObservable
                     .HttpChunk()
+                    .SelectMany(x => x)
                     .Subscribe(m_bodyObservable)
                     .AddTo(disposable)
                     ;
@@ -1029,20 +1162,23 @@ namespace ReactiveWeb
                 else
                 {
                     // no size body
-                    var body = new List<Byte>();
-                    byteObservable
-                    .Subscribe(x =>
+                    if (String.IsNullOrEmpty(contentEncoding))
                     {
-                        body.Add(x);
+                        byteObservable
+                            .Subscribe(m_bodyObservable)
+                            .AddTo(disposable)
+                            ;
                     }
-                    , m_bodyObservable.OnError
-                    , () =>
+                    else
                     {
-                        m_bodyObservable.OnNext(Decode(body.ToArray(), contentEncoding));
-                        m_bodyObservable.OnCompleted();
-                    })
-                    .AddTo(disposable)
-                    ;
+                        // Decode TransferEncoding
+                        byteObservable
+                            .ToArray()
+                            .Select(x => Decode(x, contentEncoding)).SelectMany(x => x)
+                            .Subscribe(m_bodyObservable)
+                            .AddTo(disposable)
+                            ;
+                    }
                 }
             })
             .AddTo(disposable)
@@ -1051,5 +1187,143 @@ namespace ReactiveWeb
             return disposable;
         }
     }
-#endregion
+    #endregion
+
+    #region HttpResponse
+    public class HttpResponse
+    {
+        public Uri Uri
+        {
+            get;
+            private set;
+        }
+
+        public HttpCookieManager Cookie
+        {
+            get;
+            private set;
+        }
+
+        public String Statusline
+        {
+            get;
+            private set;
+        }
+
+        public Int32 StatusCode
+        {
+            get;
+            private set;
+        }
+
+        public List<KeyValuePair<String, String>> Headers
+        {
+            get;
+            private set;
+        }
+
+        public KeyValuePair<String, String>? GetFirstHeader(String key)
+        {
+            var lowerKey = key.ToLower();
+            return Headers.FirstOrDefault(x => x.Key.ToLower() == lowerKey);
+        }
+
+        HttpResponse m_redirectFrom;
+        public IEnumerable<HttpResponse> Redirects
+        {
+            get
+            {
+                if (m_redirectFrom!=null)
+                {
+                    yield return m_redirectFrom;
+                    foreach(var r in m_redirectFrom.Redirects)
+                    {
+                        yield return r;
+                    }
+                }
+
+            }
+        }
+
+        public IObservable<Byte> BodyObservable
+        {
+            get;
+            private set;
+        }
+
+        public IObserver<Byte> CreateBodyObserver()
+        {
+            var subject = new Subject<Byte>();
+            BodyObservable = subject;
+            return subject;
+        }
+
+        public HttpResponse(Uri uri
+            , HttpCookieManager cookie
+            , String statusline
+            , IEnumerable<KeyValuePair<String, String>> headers
+            , HttpResponse redirectFrom=null
+            )
+        {
+            Uri = uri;
+            Cookie = cookie != null ? cookie : new HttpCookieManager();
+            Statusline = statusline;
+            StatusCode = int.Parse(statusline.Split().Skip(1).First());
+            Headers = headers.ToList();
+            // parser cookie
+            foreach(var kv in headers)
+            {
+                if (kv.Key.ToLower() == "set-cookie")
+                {
+                    Cookie.Push(uri, kv.Value);
+                }
+            }
+        }
+
+        public override string ToString()
+        {
+            return String.Format("{0} => {1}\n{2}"
+                , Uri, Statusline
+                , String.Join("\n", Headers.Select(x => x.Key+"="+x.Value))
+                );
+        }
+    }
+    #endregion
+
+    public static class HttpConnectionExtensions
+    {
+        public static IObservable<HttpResponse> ResponseObservable(this HttpConnection connection
+            , HttpRequest request
+            , HttpCookieManager cookie
+            , HttpResponse redirectFrom=null
+            )
+        {
+            // setup read
+            var subject = new ChunkedHttpResponseObserver();
+            subject.OnNext(connection);
+
+            var observable=
+            (
+                from statusline in subject.StatusObservable
+                from headers in subject.HeaderObservable.ToArray()
+                select new HttpResponse(request.Uri
+                        , cookie
+                        , statusline, headers
+                        , redirectFrom)
+            )
+            .Do(x =>
+            {
+                // connect body stream to response 
+                subject.BodyObservable.Subscribe(x.CreateBodyObserver());
+            })
+            ;
+
+            // SendRequest
+            connection.SendRequestObservable(request).Subscribe(y =>
+            {
+            });
+
+            return observable;
+        }
+    }
 }
